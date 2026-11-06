@@ -22,17 +22,17 @@ A fourth spot decides which of those updates you keep: the validation checkpoint
 
 From the checkpoint `config.json`:
 
-| Field | Value |
-|---|---|
-| Layers | 24 |
-| Hidden size | 896 |
-| Attention heads | 14 |
-| Key/value heads | 2 (grouped-query attention) |
-| MLP intermediate size | 4864 |
-| Vocab | 151,936 |
-| Context | 32,768 |
-| Weights on disk | bfloat16 |
-| Weights in this run | float32 |
+| Field | Value | What it means |
+|---|---|---|
+| Layers | 24 | How many times a token is rewritten before the next word is chosen. Picture 24 clerks in a line. Each one reads the sentence so far and hands a revised copy to the next. The token does not get one look. It is updated 24 times. More layers can hold more successive rewrites. They also add latency and memory on every token, because every layer runs on every token. |
+| Hidden size | 896 | How many numbers describe one token inside the model. At every layer that token is a vector of 896 floats. A wider vector holds more facts side by side (the code `NDB-17`, the 30-second lag, the failover target). A narrower one forces those facts to share slots and collide. 896 is small next to the 4096-wide vectors in a typical 7B model, which is why this one fits in 16 GB and why it memorizes a short sheet instead of learning a general skill. |
+| Attention heads | 14 | Inside each layer, those 896 numbers are split across 14 readers that run at the same time. Each reader looks at earlier tokens and writes 64 numbers (`896 / 14`). One can track which code was named. Another can track what the system prompt demanded. Their outputs are glued back into one 896-wide vector. More heads means more independent looks at the same sentence, each with a thinner slice. |
+| Key/value heads | 2 (grouped-query attention) | The notebooks those readers share. There are 14 readers asking questions and only 2 notebooks, so seven readers read the same notes. That is grouped-query attention. The cache that grows with prompt length is about 7× smaller than if every reader kept a private notebook, which is why `k_proj` and `v_proj` are 128 wide (`2 × 64`) instead of 896. The saving is memory and decode speed. The cost is less independent memory per reader. |
+| MLP intermediate size | 4864 | The scratch pad after attention. Attention is where tokens look at each other. Then each token on its own is stretched from 896 numbers to 4864, passed through a gate, and squeezed back to 896. 4864 is the width of that stretch, not a parameter count. This run left the whole MLP frozen, so the adapter never wrote here. |
+| Vocab | 151,936 | The dictionary. Every piece of text the model can read or emit is one of 151,936 ids, including the stop token `<|im_end|>` at id 151645. The lookup table is 151,936 rows by 896 columns, and the same table scores the next token (`tie_word_embeddings` is true), so it is stored once. That table is about 136 million of the 495 million parameters. A bigger dictionary means finer pieces of text, especially code and other languages, and a bigger table to move on every step. |
+| Context | 32,768 | The longest sequence the position encoding was built for. A desk sized for 32,768 cards. This script never fills it: a question plus 80 new tokens is a few hundred cards. The number still caps the key/value cache, which grows with layers × tokens × the 2 key/value heads. Past 32,768 the model has no trained position for that token. The process may keep running, and the reply gets worse. Sliding window is off in this checkpoint, so up to that limit every token can see the whole sequence. |
+| Weights on disk | bfloat16 | How the checkpoint is stored. Each number uses 16 bits: the same exponent range as float32, fewer bits for the fraction. 495 million parameters × 2 bytes is about 1 GB, which is the download. Half the disk and half the read bandwidth of float32, with enough range that overflows are rarer than in float16. |
+| Weights in this run | float32 | How the numbers sit in RAM after load. Each weight is expanded to 32 bits, so the same 495 million parameters occupy about 2 GB for the forward pass. This run does that because half-precision LoRA on Apple MPS tends to overflow and print `nan`. Float32 costs twice the memory and bandwidth of the file on disk. That is acceptable here because the model is small and the batch is 1. The frozen base still occupies that 2 GB. LoRA only avoids storing gradients and Adam state for it. |
 
 495,114,112 parameters. In float32 that is about 2 GB of weights, which fits in 16 GB next to activations for a short sequence. The checkpoint is bfloat16 on disk. This run loads float32 because LoRA training in half precision on MPS is twitchy, and the model is small enough that the extra memory is acceptable.
 
